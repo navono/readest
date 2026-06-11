@@ -7,9 +7,11 @@ import { createRejectFilter } from '@/utils/node';
 import { WebSpeechClient } from './WebSpeechClient';
 import { NativeTTSClient } from './NativeTTSClient';
 import { EdgeTTSClient } from './EdgeTTSClient';
+import { CustomTTSClient } from './CustomTTSClient';
 import { TTSUtils } from './TTSUtils';
 import { TTSClient } from './TTSClient';
 import { isValidLang } from '@/utils/lang';
+import { SystemSettings } from '@/types/settings';
 
 type TTSState =
   | 'stopped'
@@ -42,9 +44,11 @@ export class TTSController extends EventTarget {
   ttsWebClient: TTSClient;
   ttsEdgeClient: TTSClient;
   ttsNativeClient: TTSClient | null = null;
+  ttsCustomClient: TTSClient;
   ttsWebVoices: TTSVoice[] = [];
   ttsEdgeVoices: TTSVoice[] = [];
   ttsNativeVoices: TTSVoice[] = [];
+  ttsCustomVoices: TTSVoice[] = [];
   ttsTargetLang: string = '';
 
   options: TTSHighlightOptions = { style: 'highlight', color: 'gray' };
@@ -55,6 +59,14 @@ export class TTSController extends EventTarget {
     isAuthenticated: boolean = false,
     preprocessCallback?: (ssml: string) => Promise<string>,
     onSectionChange?: (sectionIndex: number) => Promise<void>,
+    /**
+     * Optional initial config for {@link CustomTTSClient}. Without this
+     * the custom client stays in its default `enabled = false` state and
+     * can never be selected as the default service, even if the user
+     * picked "custom-tts" as their default. Pass `settings.globalReadSettings.customTTS`
+     * from the active settings.
+     */
+    customTTSConfig?: SystemSettings['globalReadSettings']['customTTS'],
   ) {
     super();
     this.ttsWebClient = new WebSpeechClient(this);
@@ -62,6 +74,13 @@ export class TTSController extends EventTarget {
     // TODO: implement native TTS client for iOS and PC
     if (appService?.isAndroidApp) {
       this.ttsNativeClient = new NativeTTSClient(this);
+    }
+    this.ttsCustomClient = new CustomTTSClient(this);
+    if (customTTSConfig) {
+      // setConfig is CustomTTSClient-specific; ttsCustomClient is typed
+      // as the generic TTSClient interface, so we cast for the bespoke
+      // call (mirrors the same dance in applyCustomTTSConfig).
+      (this.ttsCustomClient as CustomTTSClient).setConfig(customTTSConfig);
     }
     this.ttsClient = this.ttsWebClient;
     this.appService = appService;
@@ -73,15 +92,21 @@ export class TTSController extends EventTarget {
 
   async init() {
     const availableClients = [];
+    if (await this.ttsWebClient.init()) {
+      availableClients.push(this.ttsWebClient);
+      this.ttsWebVoices = await this.ttsWebClient.getAllVoices();
+    }
     if (await this.ttsEdgeClient.init()) {
       availableClients.push(this.ttsEdgeClient);
+      this.ttsEdgeVoices = await this.ttsEdgeClient.getAllVoices();
     }
     if (this.ttsNativeClient && (await this.ttsNativeClient.init())) {
       availableClients.push(this.ttsNativeClient);
       this.ttsNativeVoices = await this.ttsNativeClient.getAllVoices();
     }
-    if (await this.ttsWebClient.init()) {
-      availableClients.push(this.ttsWebClient);
+    if (await this.ttsCustomClient.init()) {
+      availableClients.push(this.ttsCustomClient);
+      this.ttsCustomVoices = await this.ttsCustomClient.getAllVoices();
     }
     this.ttsClient = availableClients[0] || this.ttsWebClient;
     const preferredClientName = TTSUtils.getPreferredClient();
@@ -93,8 +118,6 @@ export class TTSController extends EventTarget {
         this.ttsClient = preferredClient;
       }
     }
-    this.ttsWebVoices = await this.ttsWebClient.getAllVoices();
-    this.ttsEdgeVoices = await this.ttsEdgeClient.getAllVoices();
   }
 
   #getPrimaryContent() {
@@ -160,15 +183,29 @@ export class TTSController extends EventTarget {
 
     this.#ttsSectionIndex = sectionIndex;
 
-    const currentSection = this.#getPrimaryContent();
+    // Section change is requested *before* we re-read the primary content
+    // so that, on return, the paginator has the target section loaded —
+    // otherwise we fall into the createDocument() branch with a brand-new
+    // doc that no Range in the wild can match. Without this, a
+    // ttsFromRange pulled from a stale view.tts doc would later throw
+    // WrongDocumentError when foliate-js tts.from() called
+    // compareBoundaryPoints against the new doc.
+    let currentSection = this.#getPrimaryContent();
     if (currentSection?.index !== sectionIndex) {
       await this.onSectionChange?.(sectionIndex);
+      // Re-read after the await — handleSectionChange awaits
+      // view.renderer.goTo, so primaryIndex/doc is now correct.
+      currentSection = this.#getPrimaryContent();
     }
 
     let doc: Document;
     if (currentSection?.index === sectionIndex && currentSection?.doc) {
       doc = currentSection.doc;
     } else {
+      // Section still not loaded into the paginator. createDocument()
+      // returns a fresh DOM doc that is NOT range-compatible with any
+      // range the caller already holds from view.tts — only safe to fall
+      // back to when the caller has no range to feed us.
       doc = await section.createDocument();
       const html = doc.querySelector('html');
       const lang = html?.getAttribute('lang') || html?.getAttribute('xml:lang') || '';
@@ -507,6 +544,7 @@ export class TTSController extends EventTarget {
     if (this.ttsEdgeClient.initialized) this.ttsEdgeClient.setPrimaryLang(lang);
     if (this.ttsWebClient.initialized) this.ttsWebClient.setPrimaryLang(lang);
     if (this.ttsNativeClient?.initialized) this.ttsNativeClient?.setPrimaryLang(lang);
+    if (this.ttsCustomClient.initialized) this.ttsCustomClient.setPrimaryLang(lang);
   }
 
   async setRate(rate: number) {
@@ -519,20 +557,47 @@ export class TTSController extends EventTarget {
     const ttsWebVoices = await this.ttsWebClient.getVoices(lang);
     const ttsEdgeVoices = await this.ttsEdgeClient.getVoices(lang);
     const ttsNativeVoices = (await this.ttsNativeClient?.getVoices(lang)) ?? [];
+    const ttsCustomVoices = await this.ttsCustomClient.getVoices(lang);
 
-    const voicesGroups = [...ttsNativeVoices, ...ttsEdgeVoices, ...ttsWebVoices];
+    // Refresh the flat voice caches so setVoice() can route by id without
+    // re-querying each client. Only the inner voice list is cached — the
+    // grouping metadata (name/disabled) is recomputed on demand by each
+    // client.
+    this.ttsWebVoices = ttsWebVoices.flatMap((g) => g.voices);
+    this.ttsEdgeVoices = ttsEdgeVoices.flatMap((g) => g.voices);
+    this.ttsNativeVoices = ttsNativeVoices.flatMap((g) => g.voices);
+    this.ttsCustomVoices = ttsCustomVoices.flatMap((g) => g.voices);
+
+    const voicesGroups = [
+      ...ttsCustomVoices,
+      ...ttsNativeVoices,
+      ...ttsEdgeVoices,
+      ...ttsWebVoices,
+    ];
     return voicesGroups;
   }
 
   async setVoice(voiceId: string, lang: string) {
     this.state = 'setvoice-paused';
-    const useEdgeTTS = !!this.ttsEdgeVoices.find(
-      (voice) => (voiceId === '' || voice.id === voiceId) && !voice.disabled,
-    );
-    const useNativeTTS = !!this.ttsNativeVoices.find(
-      (voice) => (voiceId === '' || voice.id === voiceId) && !voice.disabled,
-    );
-    if (useEdgeTTS) {
+    const useCustomTTS =
+      this.ttsCustomClient.initialized &&
+      !!this.ttsCustomVoices.find(
+        (voice) => (voiceId === '' || voice.id === voiceId) && !voice.disabled,
+      );
+    const useEdgeTTS =
+      this.ttsEdgeClient.initialized &&
+      !!this.ttsEdgeVoices.find(
+        (voice) => (voiceId === '' || voice.id === voiceId) && !voice.disabled,
+      );
+    const useNativeTTS =
+      !!this.ttsNativeClient?.initialized &&
+      !!this.ttsNativeVoices.find(
+        (voice) => (voiceId === '' || voice.id === voiceId) && !voice.disabled,
+      );
+    if (useCustomTTS) {
+      this.ttsClient = this.ttsCustomClient;
+      await this.ttsClient.setRate(this.ttsRate);
+    } else if (useEdgeTTS) {
       this.ttsClient = this.ttsEdgeClient;
       await this.ttsClient.setRate(this.ttsRate);
     } else if (useNativeTTS) {
@@ -615,5 +680,62 @@ export class TTSController extends EventTarget {
     if (this.ttsNativeClient?.initialized) {
       await this.ttsNativeClient.shutdown();
     }
+    if (this.ttsCustomClient.initialized) {
+      await this.ttsCustomClient.shutdown();
+    }
+  }
+
+  /**
+   * Apply the latest user-defined config to {@link CustomTTSClient} and
+   * (re)initialize it. Returns the new initialization status so the
+   * settings panel can surface the change to the user. When `enabled` is
+   * false the client is shut down to release any cached audio.
+   */
+  async applyCustomTTSConfig(config: SystemSettings['globalReadSettings']['customTTS']) {
+    // setConfig is CustomTTSClient-specific; ttsCustomClient is typed as
+    // the generic TTSClient interface, so we cast for the bespoke call.
+    (this.ttsCustomClient as CustomTTSClient).setConfig(config);
+    await this.ttsCustomClient.shutdown();
+    if (config.enabled && config.endpoint) {
+      await this.ttsCustomClient.init();
+      this.ttsCustomVoices = await this.ttsCustomClient.getAllVoices();
+    } else {
+      this.ttsCustomVoices = [];
+    }
+    // If the active client was the custom one and we just disabled it,
+    // fall back to a still-initialized client (or web) so playback keeps
+    // working.
+    if (this.ttsClient === this.ttsCustomClient && !this.ttsCustomClient.initialized) {
+      this.ttsClient = this.ttsEdgeClient.initialized ? this.ttsEdgeClient : this.ttsWebClient;
+      TTSUtils.setPreferredClient(this.ttsClient.name);
+    }
+    return this.ttsCustomClient.initialized;
+  }
+
+  /**
+   * All TTS clients (including the optional native one) in stable order.
+   * The settings dialog uses this to build the "Available Services" row
+   * without re-implementing the order elsewhere.
+   */
+  allClients(): TTSClient[] {
+    return [
+      this.ttsWebClient,
+      this.ttsEdgeClient,
+      ...(this.ttsNativeClient ? [this.ttsNativeClient] : []),
+      this.ttsCustomClient,
+    ];
+  }
+
+  /**
+   * Switch the active client by name, when the user picks a new default
+   * from the settings panel. No-op if the client is not initialized —
+   * playback stays on the current client until the next init cycle.
+   */
+  switchClient(name: string) {
+    const next = this.allClients().find((c) => c.name === name);
+    if (!next || !next.initialized || next === this.ttsClient) return;
+    this.state = 'setvoice-paused';
+    this.ttsClient = next;
+    TTSUtils.setPreferredClient(next.name);
   }
 }

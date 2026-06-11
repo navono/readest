@@ -7,6 +7,23 @@ import type { AISettings } from '@/services/ai/types';
 import type { NotebookTab } from '@/store/notebookStore';
 import type { DictionarySettings, ImportedDictionary } from '@/services/dictionaries/types';
 
+/**
+ * Configuration for the user-supplied OpenAI-compatible TTS endpoint. When
+ * `enabled` is true and `endpoint` is reachable, {@link CustomTTSClient}
+ * surfaces in the TTS settings panel and may be selected as the default
+ * service. The endpoint must implement:
+ *   - GET  {endpoint}/v1/audio/voices  -> { data: Voice[] }
+ *   - POST {endpoint}/v1/audio/speech  -> audio/mpeg (or any browser-playable blob)
+ * `apiKey` is sent verbatim as a Bearer token when non-empty. `model` is
+ * passed through to the request body for servers that route by model name.
+ */
+export interface CustomTTSSettings {
+  enabled: boolean;
+  endpoint: string;
+  apiKey: string;
+  model: string;
+}
+
 export type ThemeType = 'light' | 'dark' | 'auto';
 export type LibraryViewModeType = 'grid' | 'list';
 export const LibrarySortByType = {
@@ -62,6 +79,15 @@ export interface ReadSettings {
   defaultHighlightLabels: Partial<Record<HighlightColor, string>>;
   customTtsHighlightColors: string[];
   customThemes: CustomTheme[];
+
+  /**
+   * User-defined OpenAI-compatible TTS endpoint. Surfaces as a service
+   * option in the TTS settings panel when `enabled` is true and the
+   * endpoint responds. The default `endpoint` matches the bundled
+   * `CustomTTSClient` constant so the field is pre-populated; users only
+   * need to flip `enabled` on to discover local services.
+   */
+  customTTS: CustomTTSSettings;
 }
 
 export interface KOSyncSettings {

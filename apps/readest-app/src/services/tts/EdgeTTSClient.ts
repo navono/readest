@@ -6,6 +6,7 @@ import { AppService } from '@/types/system';
 import { parseSSMLMarks } from '@/utils/ssml';
 import { TTSController } from './TTSController';
 import { TTSUtils } from './TTSUtils';
+import { isWebAppPlatform } from '@/services/environment';
 
 export class EdgeTTSClient implements TTSClient {
   name = 'edge-tts';
@@ -32,8 +33,11 @@ export class EdgeTTSClient implements TTSClient {
     this.appService = appService;
   }
 
-  async init(protocol: EDGE_TTS_PROTOCOL = 'wss') {
-    this.#edgeTTS = new EdgeSpeechTTS(protocol);
+  async init(protocol?: EDGE_TTS_PROTOCOL) {
+    // Web platform (including dev-web) can't use WSS directly due to CORS/proxy
+    // constraints — always start with HTTPS. Tauri apps can use WSS natively.
+    const initialProtocol = protocol ?? (isWebAppPlatform() ? 'https' : 'wss');
+    this.#edgeTTS = new EdgeSpeechTTS(initialProtocol);
     this.#voices = EdgeSpeechTTS.voices;
     try {
       await this.#edgeTTS.create({
@@ -45,7 +49,7 @@ export class EdgeTTSClient implements TTSClient {
       });
       this.initialized = true;
     } catch {
-      if (protocol === 'wss') {
+      if (initialProtocol === 'wss') {
         if (this.controller?.isAuthenticated) {
           await this.init('https');
         } else {

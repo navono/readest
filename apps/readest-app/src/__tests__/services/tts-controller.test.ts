@@ -26,6 +26,12 @@ vi.mock('@/services/tts/NativeTTSClient', () => ({
   }),
 }));
 
+vi.mock('@/services/tts/CustomTTSClient', () => ({
+  CustomTTSClient: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
+    Object.assign(this, createMockTTSClient('custom-tts'));
+  }),
+}));
+
 vi.mock('@/services/tts/TTSUtils', () => ({
   TTSUtils: {
     getPreferredClient: vi.fn().mockReturnValue(null),
@@ -81,7 +87,11 @@ vi.mock('foliate-js/text-walker.js', () => ({
 function createMockTTSClient(name: string): TTSClient {
   return {
     name,
-    initialized: false,
+    // Mock clients are born initialized so tests don't have to manually
+    // flip the flag before exercising routing (e.g. setVoice) that now
+    // gates by `initialized`. Tests that need the uninitialized path set
+    // this back to `false` explicitly.
+    initialized: true,
     init: vi.fn().mockResolvedValue(true),
     shutdown: vi.fn().mockResolvedValue(undefined),
     speak: vi.fn().mockImplementation(async function* (): AsyncGenerator<TTSMessageEvent> {
@@ -239,10 +249,12 @@ describe('TTSController', () => {
       expect(controller.ttsWebClient.init).toHaveBeenCalled();
     });
 
-    test('sets ttsClient to first available client (edge)', async () => {
+    test('sets ttsClient to first available client (web)', async () => {
       await controller.init();
-      // edge inits first and succeeds, so it becomes the active client
-      expect(controller.ttsClient.name).toBe('edge');
+      // web inits first and succeeds, so it becomes the active client
+      // (previously this was 'edge' before init order was reorganized to
+      // surface the cheap Web Speech fallback before remote services).
+      expect(controller.ttsClient.name).toBe('web');
     });
 
     test('fetches voices from web and edge clients', async () => {
@@ -261,8 +273,8 @@ describe('TTSController', () => {
     test('falls back to web client when preferred client not found', async () => {
       vi.mocked(TTSUtils.getPreferredClient).mockReturnValue('nonexistent');
       await controller.init();
-      // first available is edge
-      expect(controller.ttsClient.name).toBe('edge');
+      // first available is web (preferred is not matched, no fallback)
+      expect(controller.ttsClient.name).toBe('web');
     });
 
     test('also initializes native client on Android', async () => {
@@ -315,14 +327,15 @@ describe('TTSController', () => {
       expect(c.ttsClient.name).toBe('native');
     });
 
-    test('throws when native voice found but native client unavailable', async () => {
+    test('falls back to web when native voice found but native client unavailable', async () => {
       // non-android, ttsNativeClient is null, but we force nativeVoices
+      // to simulate a stale voice list. With the initialized guard the
+      // controller must skip native and route to web rather than throw.
       controller.ttsNativeVoices = [{ id: 'native-v', name: 'Native', lang: 'en-US' }];
       controller.ttsEdgeVoices = [];
 
-      await expect(controller.setVoice('native-v', 'en')).rejects.toThrow(
-        'Native TTS client is not available',
-      );
+      await controller.setVoice('native-v', 'en');
+      expect(controller.ttsClient.name).toBe('web');
     });
 
     test('skips disabled voices', async () => {

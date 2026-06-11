@@ -207,6 +207,12 @@ export const DEFAULT_READSETTINGS: ReadSettings = {
   userHighlightColors: [],
   defaultHighlightLabels: {},
   customTtsHighlightColors: [],
+  customTTS: {
+    enabled: false,
+    endpoint: 'http://localhost:12236',
+    apiKey: '',
+    model: 'tts-1',
+  },
 };
 
 export const DEFAULT_MOBILE_READSETTINGS: Partial<ReadSettings> = {

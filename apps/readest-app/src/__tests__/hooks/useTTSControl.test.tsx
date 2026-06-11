@@ -88,6 +88,16 @@ vi.mock('@/store/bookDataStore', () => ({
   }),
 }));
 
+vi.mock('@/store/settingsStore', () => ({
+  useSettingsStore: () => ({
+    settings: {
+      globalReadSettings: {
+        customTTS: { enabled: false, endpoint: '', apiKey: '', model: 'tts-1' },
+      },
+    },
+  }),
+}));
+
 vi.mock('@/store/proofreadStore', () => ({
   useProofreadStore: () => ({
     getMergedRules: () => [],

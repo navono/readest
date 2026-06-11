@@ -4,6 +4,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useThemeStore } from '@/store/themeStore';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { useReaderStore } from '@/store/readerStore';
+import { useSettingsStore } from '@/store/settingsStore';
 import { useProofreadStore } from '@/store/proofreadStore';
 import { TransformContext } from '@/services/transformers/types';
 import { proofreadTransformer } from '@/services/transformers/proofread';
@@ -33,6 +34,7 @@ export const useTTSControl = ({ bookKey, onRequestHidePanel }: UseTTSControlProp
   const { getBookData } = useBookDataStore();
   const { getView, getProgress, getViewSettings } = useReaderStore();
   const { setViewSettings, setTTSEnabled } = useReaderStore();
+  const { settings } = useSettingsStore();
   const { getMergedRules } = useProofreadStore();
 
   const [ttsLang, setTtsLang] = useState<string>('en');
@@ -88,6 +90,29 @@ export const useTTSControl = ({ bookKey, onRequestHidePanel }: UseTTSControlProp
     eventDispatcher.dispatch('create-tts-highlight', { bookKey, ...sentence });
   };
 
+  // Live-reconfigure the running TTSController when the user changes the
+  // default service or the custom TTS endpoint from settings. The event
+  // itself is global (any settings dialog can dispatch it) — we apply it
+  // only to the controller for the current book.
+  const handlePreferredClientChanged = (event: CustomEvent) => {
+    const detail = event.detail as { client?: string } | undefined;
+    if (!detail?.client) return;
+    const controller = ttsControllerRef.current;
+    if (!controller) return;
+    const next = controller.allClients().find((c) => c.name === detail.client);
+    if (next && next.initialized) {
+      controller.switchClient(detail.client);
+    }
+  };
+
+  const handleCustomTTSConfigChanged = (event: CustomEvent) => {
+    const detail = event.detail as
+      | { config?: import('@/types/settings').CustomTTSSettings }
+      | undefined;
+    if (!detail?.config) return;
+    ttsControllerRef.current?.applyCustomTTSConfig(detail.config);
+  };
+
   const handleTTSTogglePlay = async (event: CustomEvent) => {
     const detail = event.detail as { bookKey: string } | undefined;
     if (detail?.bookKey !== bookKey) return;
@@ -115,6 +140,8 @@ export const useTTSControl = ({ bookKey, onRequestHidePanel }: UseTTSControlProp
     eventDispatcher.on('tts-backward', handleTTSBackward);
     eventDispatcher.on('tts-toggle-play', handleTTSTogglePlay);
     eventDispatcher.on('tts-highlight-sentence', handleTTSHighlightSentence);
+    eventDispatcher.on('tts-preferred-client-changed', handlePreferredClientChanged);
+    eventDispatcher.on('tts-custom-config-changed', handleCustomTTSConfigChanged);
     return () => {
       eventDispatcher.off('tts-speak', handleTTSSpeak);
       eventDispatcher.off('tts-stop', handleTTSStop);
@@ -122,6 +149,8 @@ export const useTTSControl = ({ bookKey, onRequestHidePanel }: UseTTSControlProp
       eventDispatcher.off('tts-backward', handleTTSBackward);
       eventDispatcher.off('tts-toggle-play', handleTTSTogglePlay);
       eventDispatcher.off('tts-highlight-sentence', handleTTSHighlightSentence);
+      eventDispatcher.off('tts-preferred-client-changed', handlePreferredClientChanged);
+      eventDispatcher.off('tts-custom-config-changed', handleCustomTTSConfigChanged);
       if (ttsControllerRef.current) {
         ttsControllerRef.current.shutdown();
         ttsControllerRef.current = null;
@@ -518,6 +547,12 @@ export const useTTSControl = ({ bookKey, onRequestHidePanel }: UseTTSControlProp
           !!user?.id,
           preprocessSSMLForTTS,
           handleSectionChange,
+          // Pass the active custom-TTS config so the new controller's
+          // CustomTTSClient is built with the right endpoint/key/model
+          // and `init()` can actually succeed. Without this the custom
+          // client is forever `enabled = false` and the user's default
+          // service selection silently falls back to Edge/Web.
+          settings.globalReadSettings.customTTS,
         );
         ttsControllerRef.current = ttsController;
         setTtsController(ttsController);
@@ -527,12 +562,29 @@ export const useTTSControl = ({ bookKey, onRequestHidePanel }: UseTTSControlProp
         ttsController.updateHighlightOptions(
           getTTSHighlightOptions(viewSettings.ttsHighlightOptions, viewSettings.isEink),
         );
-        const ssml =
-          oneTime && ttsSpeakRange
-            ? genSSMLRaw(ttsSpeakRange.toString().trim())
-            : ttsFromRange
-              ? view.tts?.from(ttsFromRange)
-              : view.tts?.start();
+        const ssml = (() => {
+          if (oneTime && ttsSpeakRange) return genSSMLRaw(ttsSpeakRange.toString().trim());
+          if (ttsFromRange) {
+            // Defensive: ttsFromRange comes from a Range tied to a specific
+            // Document. view.tts was just (re)built against the current
+            // primary section's doc — if the two differ, calling
+            // view.tts.from() crashes with WrongDocumentError inside
+            // foliate-js's compareBoundaryPoints. Fall back to
+            // view.tts.start() in that case; the user lands at the
+            // beginning of the current section instead of silently
+            // triggering the "TTS not supported" toast.
+            const ttsDoc = view.tts?.doc;
+            const rangeDoc = ttsFromRange.startContainer?.ownerDocument;
+            if (ttsDoc && rangeDoc && ttsDoc !== rangeDoc) {
+              console.warn(
+                '[TTS] ttsFromRange document mismatch; falling back to current section start',
+              );
+              return view.tts?.start();
+            }
+            return view.tts?.from(ttsFromRange);
+          }
+          return view.tts?.start();
+        })();
         if (ssml) {
           const lang = parseSSMLLang(ssml, primaryLang) || 'en';
           setIsPlaying(true);
@@ -546,11 +598,17 @@ export const useTTSControl = ({ bookKey, onRequestHidePanel }: UseTTSControlProp
         setTtsClientsInitialized(true);
         setTTSEnabled(bookKey, true);
       } catch (error) {
+        const errDetail =
+          error instanceof DOMException
+            ? `DOMException(${error.name}): ${error.message}`
+            : error instanceof Error
+              ? `${error.name}: ${error.message}`
+              : String(error);
+        console.error('[TTS] handleTTSSpeak error:', errDetail, error);
         eventDispatcher.dispatch('toast', {
           message: _('TTS not supported for this document'),
           type: 'error',
         });
-        console.error(error);
       }
     } finally {
       isStartingTTSRef.current = false;
