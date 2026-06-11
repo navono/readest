@@ -30,9 +30,13 @@ vi.mock('@/utils/ssml', () => ({
   parseSSMLMarks: vi.fn(() => ({ marks: parsedMarks })),
 }));
 
-vi.mock('@/utils/misc', () => ({
-  getUserLocale: vi.fn((lang: string) => (lang === 'en' ? 'en-US' : lang)),
-}));
+vi.mock('@/utils/misc', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils/misc')>();
+  return {
+    ...actual,
+    getUserLocale: vi.fn((lang: string) => (lang === 'en' ? 'en-US' : lang)),
+  };
+});
 
 vi.mock('@/services/tts/TTSUtils', () => ({
   TTSUtils: {
