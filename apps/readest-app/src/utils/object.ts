@@ -6,6 +6,7 @@ export const getDownloadSignedUrl = async (
   fileKey: string,
   expiresIn: number,
   bucketName?: string,
+  requestHostname?: string,
 ) => {
   const storageType = getStorageType();
   if (storageType === 'r2') {
@@ -13,7 +14,7 @@ export const getDownloadSignedUrl = async (
     return await r2Storage.getDownloadSignedUrl(bucketName, fileKey, expiresIn);
   } else {
     bucketName = bucketName || process.env['S3_BUCKET_NAME'] || '';
-    return await s3Storage.getDownloadSignedUrl(bucketName, fileKey, expiresIn);
+    return await s3Storage.getDownloadSignedUrl(bucketName, fileKey, expiresIn, requestHostname);
   }
 };
 
@@ -22,6 +23,7 @@ export const getUploadSignedUrl = async (
   contentLength: number,
   expiresIn: number,
   bucketName?: string,
+  requestHostname?: string,
 ) => {
   const storageType = getStorageType();
   if (storageType === 'r2') {
@@ -29,7 +31,13 @@ export const getUploadSignedUrl = async (
     return await r2Storage.getUploadSignedUrl(bucketName, fileKey, contentLength, expiresIn);
   } else {
     bucketName = bucketName || process.env['S3_BUCKET_NAME'] || '';
-    return await s3Storage.getUploadSignedUrl(bucketName, fileKey, contentLength, expiresIn);
+    return await s3Storage.getUploadSignedUrl(
+      bucketName,
+      fileKey,
+      contentLength,
+      expiresIn,
+      requestHostname,
+    );
   }
 };
 

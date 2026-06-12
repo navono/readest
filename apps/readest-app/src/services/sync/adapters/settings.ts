@@ -38,6 +38,13 @@ export const SETTINGS_WHITELIST = [
   'globalReadSettings.userHighlightColors',
   'globalReadSettings.defaultHighlightLabels',
   'globalReadSettings.customTtsHighlightColors',
+  // Custom TTS provider. Endpoint/model sync as plaintext; apiKey is
+  // encrypted (see encryptedFields below). Users on LAN may need to
+  // adjust the endpoint IP after sync — that's expected.
+  'globalReadSettings.customTTS.enabled',
+  'globalReadSettings.customTTS.endpoint',
+  'globalReadSettings.customTTS.model',
+  'globalReadSettings.customTTS.apiKey',
   // Dictionary preferences. Whole-field LWW — concurrent edits on
   // different devices may lose one side, but in practice users don't
   // edit these on two devices at once. `defaultProviderId` is
@@ -76,6 +83,7 @@ export const SETTINGS_ENCRYPTED_FIELDS = [
   'kosync.password',
   'readwise.accessToken',
   'hardcover.accessToken',
+  'globalReadSettings.customTTS.apiKey',
 ] as const;
 
 export type SettingsWhitelistKey = (typeof SETTINGS_WHITELIST)[number];

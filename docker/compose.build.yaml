@@ -1,10 +1,20 @@
 services:
   client:
+    image: readest:local
     build:
       context: ..
       target: production-stage
+      network: host
       args:
         NEXT_PUBLIC_SUPABASE_URL: http://${HOST_IP}:${KONG_HTTP_PORT:-8000}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
         NEXT_PUBLIC_APP_PLATFORM: web
         NEXT_PUBLIC_API_BASE_URL: http://${HOST_IP}:3000
+    # Turbopack workers communicate via /dev/shm. The default 64 MB shm is too
+    # small for the page-data fan-out and can SIGSEGV workers. 2 GB is more
+    # than enough for the build stage and is the recommended size for Node
+    # build workers in Docker.
+    shm_size: '2gb'
+    # Hard cap so the build never OOMs the host. 4 workers × 2 GB V8 heap +
+    # native overhead + fs cache fits comfortably under 12 GB.
+    mem_limit: 12g

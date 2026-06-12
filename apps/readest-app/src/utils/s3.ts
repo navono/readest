@@ -29,15 +29,40 @@ export const s3Client = new S3Client({
   credentials: s3ClientCredentials,
 });
 
-// Signing client uses S3_PUBLIC_ENDPOINT so presigned URLs contain a hostname
-// that browsers can reach (S3_ENDPOINT may be an internal docker hostname like
-// "minio:9000" which is not resolvable outside the docker network).
+// Default signing client uses S3_PUBLIC_ENDPOINT so presigned URLs contain a
+// hostname that browsers can reach (S3_ENDPOINT may be an internal docker
+// hostname like "minio:9000" which is not resolvable outside the docker network).
 const s3SigningClient = new S3Client({
   forcePathStyle: true,
   region: S3_REGION,
   endpoint: S3_PUBLIC_ENDPOINT,
   credentials: s3ClientCredentials,
 });
+
+/** Create a signing client with a custom endpoint derived from the request host.
+ *  When the API request comes from localhost/127.0.0.1 and S3_PUBLIC_ENDPOINT
+ *  uses an external IP unreachable due to WSL2 NAT, we replace the hostname
+ *  with the one the browser actually used (localhost or 127.0.0.1) so the
+ *  presigned URL stays same-origin and avoids CORS issues. */
+export const getS3SigningClient = (requestHostname?: string) => {
+  if (!requestHostname) return s3SigningClient;
+  try {
+    const publicUrl = new URL(S3_PUBLIC_ENDPOINT);
+    const isExternalIP = /^\d+\.\d+\.\d+\.\d+$/.test(publicUrl.hostname);
+    if (isExternalIP && publicUrl.hostname !== '127.0.0.1') {
+      publicUrl.hostname = requestHostname;
+      return new S3Client({
+        forcePathStyle: true,
+        region: S3_REGION,
+        endpoint: publicUrl.toString(),
+        credentials: s3ClientCredentials,
+      });
+    }
+  } catch {
+    // ignore invalid URL
+  }
+  return s3SigningClient;
+};
 
 export const s3Storage = {
   getClient: () => {
@@ -49,12 +74,17 @@ export const s3Storage = {
     });
   },
 
-  getDownloadSignedUrl: async (bucketName: string, fileKey: string, expiresIn: number) => {
+  getDownloadSignedUrl: async (
+    bucketName: string,
+    fileKey: string,
+    expiresIn: number,
+    requestHostname?: string,
+  ) => {
     const getCommand = new GetObjectCommand({
       Bucket: bucketName,
       Key: fileKey,
     });
-    const downloadUrl = await getSignedUrl(s3SigningClient, getCommand, {
+    const downloadUrl = await getSignedUrl(getS3SigningClient(requestHostname), getCommand, {
       expiresIn: expiresIn,
     });
     return downloadUrl;
@@ -65,6 +95,7 @@ export const s3Storage = {
     fileKey: string,
     contentLength: number,
     expiresIn: number,
+    requestHostname?: string,
   ) => {
     const signableHeaders = new Set<string>();
     signableHeaders.add('content-length');
@@ -74,7 +105,7 @@ export const s3Storage = {
       ContentLength: contentLength,
     });
 
-    const uploadUrl = await getSignedUrl(s3SigningClient, putCommand, {
+    const uploadUrl = await getSignedUrl(getS3SigningClient(requestHostname), putCommand, {
       expiresIn: expiresIn,
       signableHeaders,
     });

@@ -33,6 +33,13 @@ const nextConfig = {
     // caching is opt-in (beta).
     turbopackFileSystemCacheForDev: true,
     turbopackFileSystemCacheForBuild: true,
+    // Cap Next's build worker pool. The default derives from `os.cpus().length`
+    // (32 on the dev box) and triggers OOM kills inside Docker's default
+    // memory limit. Two workers × ~1.5 GB RSS plus the ~3 GB type-check
+    // process fits comfortably under the 12 GB `mem_limit` in
+    // docker/compose.build.yaml. Next reads this as a literal count, not a
+    // hint, so a low value here is the only reliable lever.
+    cpus: 2,
   },
   // Configure assetPrefix or else the server won't properly resolve your assets.
   assetPrefix: '',

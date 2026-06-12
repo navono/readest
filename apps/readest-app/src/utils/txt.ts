@@ -680,12 +680,31 @@ export class TxtToEpubConverter {
 
   private formatSegment(segment: string): string {
     segment = escapeXml(segment);
-    return segment
+    const rawLines = segment
       .replace(/-{8,}|_{8,}/g, '\n')
       .split(/\n+/)
       .map((line) => line.trim())
-      .filter((line) => line)
-      .join('</p><p>');
+      .filter((line) => line);
+    // Re-join soft-wrapped lines: if a line does not end with a sentence
+    // terminator (CJK 。！？…⁉⁇ or ASCII .!?, optionally followed by a
+    // closing quote/bracket), the next line is treated as a continuation
+    // of the same paragraph rather than a new <p>. This prevents TTS from
+    // stopping mid-sentence on hard-wrapped TXT sources where one
+    // logical paragraph spans multiple lines. See comment in tts.js
+    // getBlocks for why <p> boundaries matter here.
+    // Trailing closing-quote/brackets we allow after the terminator:
+    //   "'』」）)】］] (covers CJK and ASCII variants)
+    const sentenceEnd = /[。！？!?…⁉⁇.][\s"'』」）)】］\]]*$/u;
+    const lines: string[] = [];
+    for (const line of rawLines) {
+      const prev = lines[lines.length - 1];
+      if (prev !== undefined && !sentenceEnd.test(prev)) {
+        lines[lines.length - 1] = prev + line;
+      } else {
+        lines.push(line);
+      }
+    }
+    return lines.join('</p><p>');
   }
 
   private joinAroundUndefined(arr: (string | undefined)[]): string[] {

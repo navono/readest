@@ -194,7 +194,7 @@ const TTSPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset }
       <BoxedList
         title={_('Custom TTS')}
         description={_(
-          'Connect an OpenAI-compatible TTS endpoint. It must expose GET /v1/audio/voices and POST /v1/audio/speech.',
+          'Connect an OpenAI-compatible TTS endpoint. It must expose GET /v1/audio/voices and POST /v1/audio/speech. When accessing Readest from another device on the LAN, set the endpoint to the host machine’s IP (e.g. http://192.168.1.10:12236) instead of localhost.',
         )}
         data-setting-id='settings.tts.custom'
       >

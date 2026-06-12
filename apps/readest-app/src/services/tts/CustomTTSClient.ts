@@ -15,6 +15,39 @@ interface CustomTTSVoiceResponse {
 }
 
 const DEFAULT_CUSTOM_TTS_BASE_URL = 'http://localhost:12236';
+const DEFAULT_CUSTOM_TTS_PORT = 12236;
+
+/**
+ * Pick a sensible default endpoint for the device the page is running on.
+ *
+ * The hardcoded `http://localhost:12236` only works when the browser and
+ * the TTS service run on the same machine. When the app is opened on a
+ * phone or another LAN device (e.g. `http://192.168.1.10:4000`), the
+ * phone's loopback points to itself, not the dev machine, so the
+ * `/v1/audio/voices` probe silently fails and the voice list is empty.
+ *
+ * When we have a real window location whose hostname is not a loopback
+ * address, reuse that hostname and the default port so the request
+ * targets the same host that is serving the app.
+ */
+const resolveDefaultEndpoint = (): string => {
+  if (typeof window === 'undefined' || !window.location?.hostname) {
+    return DEFAULT_CUSTOM_TTS_BASE_URL;
+  }
+  const host = window.location.hostname;
+  if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1') {
+    return DEFAULT_CUSTOM_TTS_BASE_URL;
+  }
+  return `http://${host}:${DEFAULT_CUSTOM_TTS_PORT}`;
+};
+
+/**
+ * Test-only handle on the default-endpoint resolver. Exported so unit
+ * tests can assert the LAN-hostname behavior without poking private
+ * fields. Not part of the public API — used by
+ * `__tests__/services/custom-tts-client.test.ts` only.
+ */
+export const __resolveDefaultEndpointForTest = resolveDefaultEndpoint;
 
 export class CustomTTSClient implements TTSClient {
   name = 'custom-tts';
@@ -23,7 +56,7 @@ export class CustomTTSClient implements TTSClient {
 
   #config: CustomTTSSettings = {
     enabled: false,
-    endpoint: DEFAULT_CUSTOM_TTS_BASE_URL,
+    endpoint: resolveDefaultEndpoint(),
     apiKey: '',
     model: 'tts-1',
   };
@@ -68,7 +101,31 @@ export class CustomTTSClient implements TTSClient {
   }
 
   #baseUrl(): string {
-    return (this.#config.endpoint || DEFAULT_CUSTOM_TTS_BASE_URL).replace(/\/+$/, '');
+    const raw = (this.#config.endpoint || resolveDefaultEndpoint()).replace(/\/+$/, '');
+    // If the user-configured endpoint points at loopback (typical default
+    // `http://localhost:12236`) but the page itself is being served from
+    // a non-loopback host (e.g. a phone on the LAN hitting the host's IP),
+    // the phone's `localhost` resolves to its own loopback and the TTS
+    // probe fails silently — voices come back empty. Rewrite the hostname
+    // to match the page's hostname so the request lands on the same host
+    // that is serving Readest. The TTS service still needs to bind 0.0.0.0
+    // for this to actually reach it; we just stop pointing at the wrong
+    // device.
+    if (typeof window === 'undefined' || !window.location?.hostname) return raw;
+    const pageHost = window.location.hostname;
+    const isLoopback = (h: string) =>
+      h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1';
+    if (isLoopback(pageHost)) return raw;
+    try {
+      const url = new URL(raw);
+      if (isLoopback(url.hostname)) {
+        url.hostname = pageHost;
+        return url.toString().replace(/\/+$/, '');
+      }
+    } catch {
+      // raw is not a valid URL — fall through and let fetch() report it.
+    }
+    return raw;
   }
 
   #authHeaders(): Record<string, string> {
@@ -96,6 +153,10 @@ export class CustomTTSClient implements TTSClient {
         headers: this.#authHeaders(),
       });
       if (!response.ok) {
+        // Surface the status so the user (or a dev reading the console)
+        // can tell apart "wrong endpoint" from "endpoint up but no
+        // /v1/audio/voices route".
+        console.warn(`[CustomTTS] ${this.#baseUrl()}/v1/audio/voices returned ${response.status}`);
         this.initialized = false;
         this.#voices = [];
         return false;
@@ -112,7 +173,16 @@ export class CustomTTSClient implements TTSClient {
         this.#currentVoiceId = this.#voices[0]!.id;
       }
       this.initialized = true;
-    } catch {
+    } catch (err) {
+      // Most common cause on LAN: the endpoint hostname points to the
+      // current device's loopback, not the host running the TTS service.
+      // Log the actual error so the user can see it in DevTools instead
+      // of a silently empty voice list.
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[CustomTTS] Failed to reach ${this.#baseUrl()}/v1/audio/voices — ${reason}. ` +
+          `If you opened Readest on another device, set the endpoint to the host's LAN IP.`,
+      );
       this.initialized = false;
       this.#voices = [];
     }

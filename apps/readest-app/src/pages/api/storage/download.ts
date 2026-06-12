@@ -3,6 +3,7 @@ import { createSupabaseAdminClient } from '@/utils/supabase';
 import { corsAllMethods, runMiddleware } from '@/utils/cors';
 import { getDownloadSignedUrl } from '@/utils/object';
 import { validateUserAndToken } from '@/utils/access';
+import { isLocalhostRequest, getRequestHostname } from '@/utils/request';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   await runMiddleware(req, res, corsAllMethods);
@@ -16,6 +17,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!user || !token) {
       return res.status(403).json({ error: 'Not authenticated' });
     }
+
+    const localhost = isLocalhostRequest(req);
+    const requestHostname = localhost ? getRequestHostname(req) : undefined;
 
     if (req.method === 'GET') {
       let { fileKey } = req.query;
@@ -34,7 +38,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(400).json({ error: 'Missing or invalid fileKey' });
       }
 
-      const downloadUrlsMap = await processFileKeys([fileKey], user.id);
+      const downloadUrlsMap = await processFileKeys([fileKey], user.id, requestHostname);
       const downloadUrl = downloadUrlsMap[fileKey];
 
       if (!downloadUrl) {
@@ -59,7 +63,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(400).json({ error: 'All fileKeys must be strings' });
       }
 
-      const downloadUrls = await processFileKeys(fileKeys, user.id);
+      const downloadUrls = await processFileKeys(fileKeys, user.id, requestHostname);
 
       return res.status(200).json({ downloadUrls });
     }
@@ -72,6 +76,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 async function processFileKeys(
   fileKeys: string[],
   userId: string,
+  requestHostname?: string,
 ): Promise<Record<string, string | undefined>> {
   const supabase = createSupabaseAdminClient();
 
@@ -144,7 +149,12 @@ async function processFileKeys(
       }
 
       try {
-        const downloadUrl = await getDownloadSignedUrl(fileRecord.file_key, 1800);
+        const downloadUrl = await getDownloadSignedUrl(
+          fileRecord.file_key,
+          1800,
+          undefined,
+          requestHostname,
+        );
         return { fileKey, downloadUrl };
       } catch (error) {
         console.error('Error creating signed URL for %s:', fileKey, error);

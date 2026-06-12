@@ -8,6 +8,7 @@ import {
 } from '@/utils/access';
 import { getDownloadSignedUrl, getUploadSignedUrl } from '@/utils/object';
 import { READEST_PUBLIC_STORAGE_BASE_URL } from '@/services/constants';
+import { isLocalhostRequest, getRequestHostname } from '@/utils/request';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   await runMiddleware(req, res, corsAllMethods);
@@ -21,6 +22,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(403).json({ error: 'Not authenticated' });
   }
 
+  const localhost = isLocalhostRequest(req);
+  const requestHostname = localhost ? getRequestHostname(req) : undefined;
+
   const { fileName, fileSize, bookHash, replicaKind, replicaId, temp = false } = req.body;
   if (temp) {
     try {
@@ -29,8 +33,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const userStr = user.id.slice(0, 8);
       const fileKey = `temp/img/${timeStr}/${userStr}/${fileName}`;
       const bucketName = process.env['TEMP_STORAGE_PUBLIC_BUCKET_NAME'] || '';
-      const uploadUrl = await getUploadSignedUrl(fileKey, fileSize, 1800, bucketName);
-      const downloadUrl = await getDownloadSignedUrl(fileKey, 3 * 86400, bucketName);
+      const uploadUrl = await getUploadSignedUrl(
+        fileKey,
+        fileSize,
+        1800,
+        bucketName,
+        requestHostname,
+      );
+      const downloadUrl = await getDownloadSignedUrl(
+        fileKey,
+        3 * 86400,
+        bucketName,
+        requestHostname,
+      );
       const pathname = new URL(downloadUrl).pathname;
       const publicBaseUrl = READEST_PUBLIC_STORAGE_BASE_URL;
       const publicDownloadUrl = `${publicBaseUrl}${pathname.replace(`/${bucketName}`, '')}`;
@@ -90,7 +105,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     try {
-      const uploadUrl = await getUploadSignedUrl(fileKey, objSize, 1800);
+      const uploadUrl = await getUploadSignedUrl(
+        fileKey,
+        objSize,
+        1800,
+        undefined,
+        requestHostname,
+      );
 
       res.status(200).json({
         uploadUrl,
