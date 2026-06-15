@@ -5,6 +5,13 @@ let createBehavior: () => Promise<undefined> = () => Promise.resolve(undefined);
 
 // Shared mock control for createAudioUrl() and parsed SSML marks
 let createAudioUrlBehavior = vi.fn<() => Promise<string>>(() => Promise.resolve('blob:mock-url'));
+type MockAudioResult = {
+  url: string;
+  boundaries: Array<{ offset: number; duration: number; text: string }>;
+};
+let createAudioBehavior = vi.fn<() => Promise<MockAudioResult>>(() =>
+  Promise.resolve({ url: 'blob:mock-url', boundaries: [] }),
+);
 let parsedMarks: Array<{ name: string; text: string; language: string }> = [];
 
 // --- Mocks ---
@@ -21,6 +28,7 @@ vi.mock('@/libs/edgeTTS', () => {
       static voices = voices;
       create = vi.fn().mockImplementation(() => createBehavior());
       createAudioUrl = vi.fn().mockImplementation(() => createAudioUrlBehavior());
+      createAudio = vi.fn().mockImplementation(() => createAudioBehavior());
     },
     EDGE_TTS_PROTOCOL: 'wss',
   };
@@ -38,12 +46,17 @@ vi.mock('@/utils/misc', async (importOriginal) => {
   };
 });
 
-vi.mock('@/services/tts/TTSUtils', () => ({
-  TTSUtils: {
-    getPreferredVoice: vi.fn(() => null),
-    sortVoicesFunc: (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id),
-  },
-}));
+vi.mock('@/services/tts/TTSUtils', async (importOriginal) => {
+  const { TTSUtils: ActualTTSUtils } =
+    await importOriginal<typeof import('@/services/tts/TTSUtils')>();
+  return {
+    TTSUtils: {
+      getPreferredVoice: vi.fn(() => null),
+      sortVoicesFunc: ActualTTSUtils.sortVoicesFunc,
+      sortVoicesPreferLocaleFunc: ActualTTSUtils.sortVoicesPreferLocaleFunc,
+    },
+  };
+});
 
 import { EdgeTTSClient } from '@/services/tts/EdgeTTSClient';
 import { TTSController } from '@/services/tts/TTSController';
@@ -62,6 +75,9 @@ describe('EdgeTTSClient', () => {
   beforeEach(() => {
     createBehavior = () => Promise.resolve(undefined);
     createAudioUrlBehavior = vi.fn<() => Promise<string>>(() => Promise.resolve('blob:mock-url'));
+    createAudioBehavior = vi.fn<() => Promise<MockAudioResult>>(() =>
+      Promise.resolve({ url: 'blob:mock-url', boundaries: [] }),
+    );
     parsedMarks = [];
     client = new EdgeTTSClient();
   });
@@ -220,6 +236,12 @@ describe('EdgeTTSClient', () => {
     });
   });
 
+  describe('supportsWordBoundaries', () => {
+    test('returns true (Edge reports word-boundary timings)', () => {
+      expect(client.supportsWordBoundaries()).toBe(true);
+    });
+  });
+
   describe('getGranularities', () => {
     test('returns array with sentence granularity only', () => {
       const granularities = client.getGranularities();
@@ -309,11 +331,45 @@ describe('EdgeTTSClient', () => {
       expect(voiceIds).toContain('en-GB-SoniaNeural');
     });
 
-    test('returns sorted voices using TTSUtils.sortVoicesFunc', async () => {
+    test('returns sorted voices with user-locale voices first for "en"', async () => {
+      // getUserLocale is mocked to return en-US for 'en'
       const groups = await client.getVoices('en');
       const voiceIds = groups[0]!.voices.map((v) => v.id);
-      const sorted = [...voiceIds].sort();
-      expect(voiceIds).toEqual(sorted);
+      expect(voiceIds).toEqual(['en-US-AnaNeural', 'en-US-AriaNeural', 'en-GB-SoniaNeural']);
+    });
+
+    // #4033: the voice set must not change between parts of a single book that
+    // mix region variants of the same language (e.g. en-US front matter and
+    // en-GB body text in Standard Ebooks)
+    test('returns the same English voice set for any region variant', async () => {
+      const ids = async (lang: string) =>
+        (await client.getVoices(lang))[0]!.voices.map((v) => v.id).sort();
+      const us = await ids('en-US');
+      const gb = await ids('en-GB');
+      const en = await ids('en');
+      expect(gb).toEqual(us);
+      expect(en).toEqual(us);
+      expect(us).toEqual(['en-GB-SoniaNeural', 'en-US-AnaNeural', 'en-US-AriaNeural']);
+    });
+
+    test('lists voices of the requested locale first', async () => {
+      const gb = await client.getVoices('en-GB');
+      expect(gb[0]!.voices[0]!.id).toBe('en-GB-SoniaNeural');
+      const us = await client.getVoices('en-US');
+      expect(us[0]!.voices[0]!.id).toBe('en-US-AnaNeural');
+    });
+
+    test('does not include voices from other languages', async () => {
+      const fr = await client.getVoices('fr-FR');
+      expect(fr[0]!.voices.map((v) => v.id)).toEqual(['fr-FR-DeniseNeural']);
+      const en = await client.getVoices('en-US');
+      expect(en[0]!.voices.map((v) => v.id)).not.toContain('fr-FR-DeniseNeural');
+    });
+
+    test('getVoiceIdFromLang still resolves an exact-locale default voice', async () => {
+      expect(await client.getVoiceIdFromLang('en-GB')).toBe('en-GB-SoniaNeural');
+      // AnaNeural sorts first for en-US but is avoided as default
+      expect(await client.getVoiceIdFromLang('en-US')).toBe('en-US-AriaNeural');
     });
 
     test('marks group as disabled when not initialized', async () => {
@@ -442,6 +498,139 @@ describe('EdgeTTSClient', () => {
 
     test('stop resolves without error when no audio element exists', async () => {
       await expect(client.stop()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('word boundary tracking during playback', () => {
+    class MockAudio {
+      static instances: MockAudio[] = [];
+      src = '';
+      currentTime = 0;
+      preload = '';
+      playbackRate = 1;
+      onended: ((e?: Event) => void) | null = null;
+      onerror: ((e?: unknown) => void) | null = null;
+      constructor() {
+        MockAudio.instances.push(this);
+      }
+      setAttribute() {}
+      play() {
+        return Promise.resolve();
+      }
+      pause() {}
+    }
+
+    let rafCallbacks: Map<number, FrameRequestCallback>;
+    let rafId = 0;
+    const runRaf = () => {
+      const cbs = [...rafCallbacks.values()];
+      rafCallbacks.clear();
+      for (const cb of cbs) cb(0);
+    };
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    let mockController: {
+      dispatchSpeakMark: ReturnType<typeof vi.fn>;
+      prepareSpeakWords: ReturnType<typeof vi.fn>;
+      dispatchSpeakWord: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(() => {
+      MockAudio.instances = [];
+      rafCallbacks = new Map();
+      vi.stubGlobal('Audio', MockAudio);
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+        rafCallbacks.set(++rafId, cb);
+        return rafId;
+      });
+      vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+        rafCallbacks.delete(id);
+      });
+      mockController = {
+        dispatchSpeakMark: vi.fn(),
+        prepareSpeakWords: vi.fn(),
+        dispatchSpeakWord: vi.fn(),
+      };
+      client = new EdgeTTSClient(mockController as unknown as TTSController);
+      parsedMarks = [{ name: '0', text: 'Hello brave world', language: 'en' }];
+      createAudioBehavior = vi.fn(() =>
+        Promise.resolve({
+          url: 'blob:mock-url',
+          boundaries: [
+            { offset: 1_000_000, duration: 4_000_000, text: 'Hello' },
+            { offset: 6_000_000, duration: 4_000_000, text: 'brave' },
+            { offset: 11_000_000, duration: 4_000_000, text: 'world' },
+          ],
+        }),
+      );
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    const startSpeak = async () => {
+      await client.init();
+      const it = client.speak('<ssml/>', new AbortController().signal);
+      const first = await it.next();
+      expect((first.value as { code: string }).code).toBe('boundary');
+      const resultPromise = it.next();
+      await flush();
+      const audio = MockAudio.instances.at(-1)!;
+      return { it, resultPromise, audio };
+    };
+
+    test('prepares speak words and dispatches word indexes as playback advances', async () => {
+      const { resultPromise, audio } = await startSpeak();
+
+      expect(mockController.prepareSpeakWords).toHaveBeenCalledWith(['Hello', 'brave', 'world']);
+
+      audio.currentTime = 0.11;
+      runRaf();
+      expect(mockController.dispatchSpeakWord).toHaveBeenCalledWith(0);
+
+      audio.currentTime = 0.65;
+      runRaf();
+      expect(mockController.dispatchSpeakWord).toHaveBeenLastCalledWith(1);
+
+      // Same word index is not re-dispatched on subsequent frames.
+      const callCount = mockController.dispatchSpeakWord.mock.calls.length;
+      runRaf();
+      expect(mockController.dispatchSpeakWord.mock.calls.length).toBe(callCount);
+
+      audio.onended?.();
+      const result = await resultPromise;
+      expect((result.value as { code: string }).code).toBe('end');
+    });
+
+    test('stops dispatching after the chunk ends', async () => {
+      const { resultPromise, audio } = await startSpeak();
+
+      audio.currentTime = 0.11;
+      runRaf();
+      const callCount = mockController.dispatchSpeakWord.mock.calls.length;
+
+      audio.onended?.();
+      await resultPromise;
+
+      audio.currentTime = 1.2;
+      runRaf();
+      expect(mockController.dispatchSpeakWord.mock.calls.length).toBe(callCount);
+    });
+
+    test('hands empty words to the controller and does not track when no boundaries', async () => {
+      createAudioBehavior = vi.fn(() => Promise.resolve({ url: 'blob:mock-url', boundaries: [] }));
+      const { resultPromise, audio } = await startSpeak();
+
+      // Empty words are still forwarded so the controller can draw the
+      // sentence-highlight fallback; no per-word tracking is started.
+      expect(mockController.prepareSpeakWords).toHaveBeenCalledWith([]);
+      audio.currentTime = 0.5;
+      runRaf();
+      expect(mockController.dispatchSpeakWord).not.toHaveBeenCalled();
+
+      audio.onended?.();
+      await resultPromise;
     });
   });
 });

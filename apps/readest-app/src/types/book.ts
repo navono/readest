@@ -273,7 +273,8 @@ export interface ViewConfig {
   showBatteryPercentage: boolean;
   tapToToggleFooter: boolean;
   showPaginationButtons: boolean;
-  progressStyle: 'percentage' | 'fraction';
+  progressStyle: 'percentage' | 'fraction' | 'reference';
+  referencePageCount: number;
   progressInfoMode: ProgressBarMode;
 
   animated: boolean;
@@ -326,6 +327,7 @@ export interface NoteExportConfig {
 export interface AnnotatorConfig {
   enableAnnotationQuickActions: boolean;
   annotationQuickAction: AnnotationToolType | null;
+  annotationToolbarItems: AnnotationToolType[];
   copyToNotebook: boolean;
   noteExportConfig: NoteExportConfig;
 }
@@ -378,6 +380,7 @@ export interface BookProgress {
   sectionLabel: string;
   section: PageInfo;
   pageinfo: PageInfo;
+  pageItem?: { label?: string; href?: string } | null;
   timeinfo: TimeInfo;
   index: number;
   range: Range;

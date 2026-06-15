@@ -26,8 +26,13 @@ mod clip_url;
 mod dir_scanner;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod discord_rpc;
+mod epub_parser;
 #[cfg(target_os = "macos")]
 mod macos;
+mod mobi_parser;
+mod nightly_update;
+mod parser_common;
+mod range_file;
 mod transfer_file;
 #[cfg(desktop)]
 mod window_state;
@@ -268,6 +273,11 @@ pub fn run() {
             get_executable_dir,
             allow_paths_in_scopes,
             dir_scanner::read_dir,
+            epub_parser::parse_epub_metadata,
+            epub_parser::extract_epub_cover_full,
+            epub_parser::parse_epub_full,
+            mobi_parser::parse_mobi_metadata,
+            mobi_parser::extract_mobi_cover_full,
             #[cfg(target_os = "macos")]
             macos::safari_auth::auth_with_safari,
             #[cfg(target_os = "macos")]
@@ -281,6 +291,9 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             discord_rpc::clear_book_presence,
             clip_url::clip_url,
+            nightly_update::verify_update_signature,
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            nightly_update::install_nightly_update,
         ])
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_persisted_scope::init())
@@ -295,7 +308,11 @@ pub fn run() {
         .plugin(tauri_plugin_turso::init())
         .plugin(tauri_plugin_native_bridge::init())
         .plugin(tauri_plugin_native_tts::init())
-        .plugin(tauri_plugin_webview_upgrade::init());
+        .plugin(tauri_plugin_webview_upgrade::init())
+        // Serves local file byte-ranges to `RemoteFile` via `?path=&start=&end=`
+        // (range-in-URL, not a `Range` header) so Android's WebView doesn't
+        // re-apply the offset. Scope-gated by `asset_protocol_scope`.
+        .register_asynchronous_uri_scheme_protocol(range_file::SCHEME, range_file::handle);
 
     #[cfg(desktop)]
     let builder = builder.plugin(

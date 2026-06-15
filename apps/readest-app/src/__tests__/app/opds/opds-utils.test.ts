@@ -4,8 +4,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('foliate-js/opds.js', () => ({
   isOPDSCatalog: vi.fn((type: string) => {
     return (
-      type.includes('application/atom+xml') &&
-      (type.includes('opds-catalog') || type.includes('opds'))
+      type.includes('application/opds+json') ||
+      (type.includes('application/atom+xml') &&
+        (type.includes('opds-catalog') || type.includes('opds')))
     );
   }),
 }));
@@ -47,12 +48,14 @@ import {
   groupByArray,
   parseMediaType,
   isSearchLink,
+  expandOPDSSearchTemplate,
   resolveURL,
   getFileExtFromPath,
   looksLikeXMLContent,
   parseOPDSXML,
   MIME,
   validateOPDSURL,
+  getOPDSNavLink,
 } from '@/app/opds/utils/opdsUtils';
 import type { OPDSBaseLink } from '@/types/opds';
 import { fetchWithAuth } from '@/app/opds/utils/opdsReq';
@@ -241,6 +244,25 @@ describe('opdsUtils', () => {
       expect(isSearchLink(link)).toBe(false);
     });
 
+    it('should return true for a templated OPDS 2.0 JSON search link', () => {
+      const link: OPDSBaseLink = {
+        rel: 'search',
+        href: '/opds/search{?query}',
+        type: MIME.OPDS2,
+        templated: true,
+      };
+      expect(isSearchLink(link)).toBe(true);
+    });
+
+    it('should return false for an OPDS 2.0 JSON search link that is not templated', () => {
+      const link: OPDSBaseLink = {
+        rel: 'search',
+        href: '/opds/search',
+        type: MIME.OPDS2,
+      };
+      expect(isSearchLink(link)).toBe(false);
+    });
+
     it('should return false when rel is undefined', () => {
       const link: OPDSBaseLink = {
         href: '/search',
@@ -256,6 +278,38 @@ describe('opdsUtils', () => {
         type: MIME.ATOM,
       };
       expect(isSearchLink(link)).toBe(false);
+    });
+  });
+
+  describe('expandOPDSSearchTemplate', () => {
+    it('expands a {?query} template with the search term', () => {
+      expect(expandOPDSSearchTemplate('/opds/search{?query}', 'dune')).toBe(
+        '/opds/search?query=dune',
+      );
+    });
+
+    it('percent-encodes the search term', () => {
+      expect(expandOPDSSearchTemplate('/opds/search{?query}', 'harry potter')).toBe(
+        '/opds/search?query=harry%20potter',
+      );
+    });
+
+    it('fills a {?searchTerms} template variable', () => {
+      expect(expandOPDSSearchTemplate('/search{?searchTerms}', 'foo')).toBe(
+        '/search?searchTerms=foo',
+      );
+    });
+
+    it('fills only the primary text variable, omitting the rest', () => {
+      expect(expandOPDSSearchTemplate('/search{?query,lang}', 'foo')).toBe('/search?query=foo');
+    });
+
+    it('falls back to the only variable when none is a known query name', () => {
+      expect(expandOPDSSearchTemplate('/search{?keyword}', 'foo')).toBe('/search?keyword=foo');
+    });
+
+    it('returns the href unchanged when there are no template variables', () => {
+      expect(expandOPDSSearchTemplate('/search', 'foo')).toBe('/search');
     });
   });
 
@@ -693,6 +747,38 @@ describe('opdsUtils', () => {
         expect.objectContaining({ signal: expect.anything() }),
         customHeaders,
       );
+    });
+  });
+
+  describe('getOPDSNavLink', () => {
+    it('returns the href of the first OPDS-typed link', () => {
+      expect(
+        getOPDSNavLink([{ href: '/opds/subjects?id=164', type: 'application/opds+json' }]),
+      ).toBe('/opds/subjects?id=164');
+    });
+
+    it('skips links whose type is not an OPDS catalog type', () => {
+      expect(
+        getOPDSNavLink([{ href: 'https://example.com/author', type: 'text/html' }]),
+      ).toBeUndefined();
+    });
+
+    it('returns the first OPDS link when mixed with non-OPDS links', () => {
+      expect(
+        getOPDSNavLink([
+          { href: 'https://example.com/author', type: 'text/html' },
+          { href: '/opds/search?author_id=52836', type: 'application/opds+json' },
+        ]),
+      ).toBe('/opds/search?author_id=52836');
+    });
+
+    it('returns undefined for an empty or missing array', () => {
+      expect(getOPDSNavLink([])).toBeUndefined();
+      expect(getOPDSNavLink(undefined)).toBeUndefined();
+    });
+
+    it('ignores entries without an href', () => {
+      expect(getOPDSNavLink([{ type: 'application/opds+json' }])).toBeUndefined();
     });
   });
 });
