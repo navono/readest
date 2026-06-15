@@ -32,6 +32,14 @@ dev: ## Start with local source mount for development (hot reload)
 build: ## Build client image from local source, then start
 	$(COMPOSE) $(BUILD_F) up --build -d
 
+.PHONY: rebuild
+rebuild:
+	$(COMPOSE) $(BUILD_F) build client --no-cache
+
+.PHONY: recreate
+recreate:
+	$(COMPOSE) $(COMPOSE_F) up -d --force-recreate client
+
 .PHONY: down
 down: ## Stop and remove all containers (keep data)
 	$(COMPOSE) $(COMPOSE_F) down
