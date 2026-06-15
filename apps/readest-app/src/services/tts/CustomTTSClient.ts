@@ -438,4 +438,8 @@ export class CustomTTSClient implements TTSClient {
       throw err;
     }
   };
+
+  supportsWordBoundaries(): boolean {
+    return false;
+  }
 }
