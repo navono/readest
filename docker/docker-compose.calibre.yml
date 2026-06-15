@@ -1,0 +1,24 @@
+# docker-compose.yml
+version: "3.8"
+
+services:
+  calibre-web:
+    image: linuxserver/calibre-web:latest
+    container_name: calibre-web
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+      - DOCKER_MODS=linuxserver/mods:universal-calibre
+      - http_proxy=http://host.docker.internal:18899
+      - https_proxy=http://host.docker.internal:18899
+      - HTTP_PROXY=http://host.docker.internal:18899
+      - HTTPS_PROXY=http://host.docker.internal:18899
+    volumes:
+      - ./config/calibre:/config
+      - /mnt/e/OneDrive/eBooks/calibre:/books
+    ports:
+      - 8083:8083
+    restart: unless-stopped

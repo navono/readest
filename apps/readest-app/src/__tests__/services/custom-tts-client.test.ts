@@ -67,30 +67,25 @@ describe('CustomTTSClient', () => {
       expect(__resolveDefaultEndpointForTest()).toBe('http://localhost:12236');
     });
 
-    test('mirrors the page hostname when on a 192.168.x LAN address', () => {
-      // Regression: phone on the LAN used to get http://localhost:12236
-      // (its own loopback), so the voices probe never reached the dev
-      // machine. The default should reuse the page's hostname.
+    test('always returns http://localhost:12236 regardless of page hostname', () => {
+      // resolveDefaultEndpoint no longer mirrors the page hostname into
+      // the default because that breaks domain-name access (the TTS service
+      // is not at domain:12236). LAN hostname rewriting is handled at
+      // request time in #baseUrl() instead.
       setHostname('192.168.1.10');
-      expect(__resolveDefaultEndpointForTest()).toBe('http://192.168.1.10:12236');
-    });
-
-    test('mirrors the page hostname when on a 10.x private IP', () => {
-      setHostname('10.0.0.42');
-      expect(__resolveDefaultEndpointForTest()).toBe('http://10.0.0.42:12236');
-    });
-
-    test('mirrors a public DNS hostname (so a tunnel/remote setup works too)', () => {
+      expect(__resolveDefaultEndpointForTest()).toBe('http://localhost:12236');
       setHostname('tts.example.com');
-      expect(__resolveDefaultEndpointForTest()).toBe('http://tts.example.com:12236');
+      expect(__resolveDefaultEndpointForTest()).toBe('http://localhost:12236');
     });
 
-    test('end-to-end: init() uses the resolved default, not a hardcoded localhost', async () => {
-      // Construct without setConfig, then enable via the field that
-      // setConfig would touch. The test-only accessor below lets us
-      // peek at the captured default and confirm init() hits it.
+    test('end-to-end: init() uses the resolved default with LAN hostname rewriting in #baseUrl()', async () => {
+      // Construct without setConfig, then enable. The default endpoint is
+      // always http://localhost:12236, but #baseUrl() rewrites the loopback
+      // to the LAN page hostname at request time.
       setHostname('192.168.1.10');
       const expected = __resolveDefaultEndpointForTest();
+      // The default is always localhost; #baseUrl() rewrites it for LAN.
+      expect(expected).toBe('http://localhost:12236');
 
       const fetchMock = vi.fn();
       fetchMock.mockResolvedValueOnce({
@@ -101,11 +96,6 @@ describe('CustomTTSClient', () => {
       vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
 
       const client = new CustomTTSClient();
-      // setConfig with the SAME endpoint as the default — this preserves
-      // the constructor's URL and only flips `enabled` to true. If the
-      // bug came back and the constructor still hardcoded localhost, the
-      // setConfig would inject localhost and the assertion below would
-      // catch it.
       client.setConfig({
         enabled: true,
         endpoint: expected,
@@ -116,6 +106,7 @@ describe('CustomTTSClient', () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const calledUrl = fetchMock.mock.calls[0]?.[0] as string;
+      // #baseUrl() rewrites loopback → LAN page hostname for LAN IPs.
       expect(calledUrl).toBe('http://192.168.1.10:12236/v1/audio/voices');
       vi.unstubAllGlobals();
     });

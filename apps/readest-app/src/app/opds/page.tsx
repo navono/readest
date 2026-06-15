@@ -8,6 +8,7 @@ import { isOPDSCatalog, getPublication, getFeed, getOpenSearch } from 'foliate-j
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useEnv } from '@/context/EnvContext';
 import { useAuth } from '@/context/AuthContext';
+import { formatTitle } from '@/utils/book';
 import { isWebAppPlatform } from '@/services/environment';
 import { downloadFile } from '@/libs/storage';
 import { Toast } from '@/components/Toast';
@@ -409,6 +410,13 @@ export default function BrowserPage() {
     searchTermRef.current = '';
   }, [startURLRef, handleNavigate]);
 
+  const handleRefresh = useCallback(() => {
+    const currentURL = state.currentURL || startURLRef.current;
+    if (currentURL) {
+      loadOPDS(currentURL, { skipHistory: true });
+    }
+  }, [state.currentURL, startURLRef, loadOPDS]);
+
   const handleSearch = useCallback(
     (queryTerm: string) => {
       if (!state.feed) return;
@@ -512,7 +520,19 @@ export default function BrowserPage() {
 
           const pathname = decodeURIComponent(new URL(url).pathname);
           const ext = getFileExtFromMimeType(parsed?.mediaType) || getFileExtFromPath(pathname);
-          const basename = pathname.replaceAll('/', '_');
+          // Use the publication title as the base filename when available;
+          // fall back to the last path segment to avoid producing long
+          // filenames like _opds_download_3_txt_ from the full URL path.
+          // Same strategy as autoDownload.ts.
+          const titleSlug =
+            (publication?.metadata?.title || '')
+              .replaceAll(/[/\\:*?"<>|]/g, '_')
+              .trim()
+              .slice(0, 200) || '';
+          const lastSegment = pathname.split('/').filter(Boolean).pop() ?? '';
+          const sanitized =
+            (lastSegment || '').replaceAll(/[/\\:*?"<>|]/g, '_').slice(0, 200) || '';
+          const basename = titleSlug || sanitized || 'opds-download';
           const filename = ext ? `${basename}.${ext}` : basename;
           let dstFilePath = await appService?.resolveFilePath(filename, 'Cache');
           console.log('Downloading to:', url, dstFilePath);
@@ -539,6 +559,20 @@ export default function BrowserPage() {
           const { library, setLibrary } = useLibraryStore.getState();
           try {
             const book = await appService.importBook(dstFilePath, library);
+            // Override the book title with the OPDS publication title when
+            // they differ — e.g. Calibre may store pinyin ("Gui Tu") inside
+            // the EPUB metadata while the OPDS feed shows the Chinese title
+            // ("归途"). The feed title is what the user saw and expects.
+            const opdsTitle = publication?.metadata?.title
+              ? formatTitle(publication.metadata.title)
+              : undefined;
+            if (book && opdsTitle && opdsTitle !== book.title) {
+              book.title = opdsTitle;
+              book.sourceTitle = opdsTitle;
+              if (book.metadata) {
+                book.metadata.title = opdsTitle;
+              }
+            }
             if (book && catalogSourceId) {
               try {
                 await upsertOPDSSourceMapping(appService, {
@@ -568,7 +602,15 @@ export default function BrowserPage() {
         throw e;
       }
     },
-    [user, state.baseURL, appService, libraryLoaded, settings.autoUpload, catalogSourceId],
+    [
+      user,
+      state.baseURL,
+      appService,
+      libraryLoaded,
+      settings.autoUpload,
+      catalogSourceId,
+      publication,
+    ],
   );
 
   const handleStream = useCallback(
@@ -901,6 +943,7 @@ export default function BrowserPage() {
           onBack={handleBack}
           onForward={handleForward}
           onGoStart={handleGoStart}
+          onRefresh={handleRefresh}
           onSearch={handleSearch}
           canGoBack={canGoBack}
           canGoForward={canGoForward}

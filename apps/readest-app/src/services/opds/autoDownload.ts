@@ -88,6 +88,16 @@ async function downloadAndImport(
 
   const book = await appService.importBook(dstFilePath, books);
   if (!book) throw new Error(`importBook returned null for ${item.title}`);
+  // Override the book title with the OPDS feed title when they differ —
+  // e.g. Calibre may store pinyin inside the EPUB metadata while the OPDS
+  // feed shows the original script (Chinese, Japanese, etc.).
+  if (item.title && item.title !== book.title) {
+    book.title = item.title;
+    book.sourceTitle = item.title;
+    if (book.metadata) {
+      book.metadata.title = item.title;
+    }
+  }
   try {
     await upsertOPDSSourceMapping(appService, {
       catalogId: catalog.contentId || catalog.id,

@@ -5,7 +5,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { FaSearch } from 'react-icons/fa';
 import { IoMdCloseCircle } from 'react-icons/io';
-import { IoChevronBack, IoChevronForward, IoHome, IoFilter, IoAdd } from 'react-icons/io5';
+import {
+  IoChevronBack,
+  IoChevronForward,
+  IoHome,
+  IoFilter,
+  IoAdd,
+  IoRefresh,
+} from 'react-icons/io5';
 import { useEnv } from '@/context/EnvContext';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTrafficLight } from '@/hooks/useTrafficLight';
@@ -24,6 +31,7 @@ interface NavigationProps {
   onBack?: () => void;
   onForward?: () => void;
   onGoStart: () => void;
+  onRefresh?: () => void;
   onSearch: (queryTerm: string) => void;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -40,6 +48,7 @@ export function Navigation({
   onBack,
   onForward,
   onGoStart,
+  onRefresh,
   onSearch,
   canGoBack,
   canGoForward,
@@ -140,6 +149,16 @@ export function Navigation({
         <button className='btn btn-ghost btn-sm px-1' onClick={onGoStart} title={_('Home')}>
           <IoHome className='h-5 w-5' />
         </button>
+        {onRefresh && (
+          <button
+            className='btn btn-ghost btn-sm px-1'
+            onClick={onRefresh}
+            title={_('Refresh')}
+            aria-label={_('Refresh')}
+          >
+            <IoRefresh className='h-5 w-5' />
+          </button>
+        )}
       </div>
 
       <div className='flex-grow px-3 sm:px-5'>

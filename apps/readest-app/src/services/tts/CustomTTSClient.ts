@@ -15,7 +15,6 @@ interface CustomTTSVoiceResponse {
 }
 
 const DEFAULT_CUSTOM_TTS_BASE_URL = 'http://localhost:12236';
-const DEFAULT_CUSTOM_TTS_PORT = 12236;
 
 /**
  * Pick a sensible default endpoint for the device the page is running on.
@@ -31,14 +30,12 @@ const DEFAULT_CUSTOM_TTS_PORT = 12236;
  * targets the same host that is serving the app.
  */
 const resolveDefaultEndpoint = (): string => {
-  if (typeof window === 'undefined' || !window.location?.hostname) {
-    return DEFAULT_CUSTOM_TTS_BASE_URL;
-  }
-  const host = window.location.hostname;
-  if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1') {
-    return DEFAULT_CUSTOM_TTS_BASE_URL;
-  }
-  return `http://${host}:${DEFAULT_CUSTOM_TTS_PORT}`;
+  // Always return the canonical loopback default. The LAN/Docker hostname
+  // rewriting is handled in #baseUrl() at request time so that a user-
+  // configured endpoint (e.g. https://tts.example.com) is never mangled
+  // by the constructor default, and the default is only rewritten when
+  // the page is accessed from a LAN IP (not a domain name).
+  return DEFAULT_CUSTOM_TTS_BASE_URL;
 };
 
 /**
@@ -102,15 +99,22 @@ export class CustomTTSClient implements TTSClient {
 
   #baseUrl(): string {
     const raw = (this.#config.endpoint || resolveDefaultEndpoint()).replace(/\/+$/, '');
-    // If the user-configured endpoint points at loopback (typical default
-    // `http://localhost:12236`) but the page itself is being served from
-    // a non-loopback host (e.g. a phone on the LAN hitting the host's IP),
-    // the phone's `localhost` resolves to its own loopback and the TTS
-    // probe fails silently — voices come back empty. Rewrite the hostname
-    // to match the page's hostname so the request lands on the same host
-    // that is serving Readest. The TTS service still needs to bind 0.0.0.0
-    // for this to actually reach it; we just stop pointing at the wrong
-    // device.
+    // When the endpoint still points at loopback (the default
+    // `http://localhost:12236`) but the page is served from a non-loopback
+    // host, the browser's `localhost` resolves to the client device's own
+    // loopback — which is not the host running the TTS service.
+    //
+    // We used to rewrite the hostname to `window.location.hostname`, but
+    // that breaks when the page is accessed via a domain name or reverse
+    // proxy (the TTS service is not at `domain:12236`) and also triggers
+    // mixed-content blocking when the page is HTTPS but the rewritten URL
+    // is HTTP.
+    //
+    // Instead, detect LAN IP access (non-loopback, non-domain) and rewrite
+    // to the page hostname only in that case — the TTS service running on
+    // the same LAN host can be reached that way. For domain-name access,
+    // leave the endpoint as-is and let the fetch fail with a clear console
+    // warning so the user knows to configure the endpoint manually.
     if (typeof window === 'undefined' || !window.location?.hostname) return raw;
     const pageHost = window.location.hostname;
     const isLoopback = (h: string) =>
@@ -119,8 +123,22 @@ export class CustomTTSClient implements TTSClient {
     try {
       const url = new URL(raw);
       if (isLoopback(url.hostname)) {
-        url.hostname = pageHost;
-        return url.toString().replace(/\/+$/, '');
+        // Only rewrite the loopback endpoint to the page hostname when the
+        // page is accessed via a LAN IP (not a domain name). Domain access
+        // means there's a reverse proxy in front — the TTS service is not
+        // at `domain:12236`.
+        const isLanIP = /^\d{1,3}(\.\d{1,3}){3}$/.test(pageHost);
+        if (isLanIP) {
+          url.hostname = pageHost;
+          return url.toString().replace(/\/+$/, '');
+        }
+        // Domain access with default loopback endpoint — the user needs to
+        // configure the endpoint manually. Log a clear message and return
+        // the raw value so the fetch fails visibly.
+        console.warn(
+          `[CustomTTS] Endpoint "${raw}" is unreachable from this domain. ` +
+            `Please configure the Custom TTS endpoint in Settings → TTS → Custom TTS.`,
+        );
       }
     } catch {
       // raw is not a valid URL — fall through and let fetch() report it.
