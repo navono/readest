@@ -39,6 +39,7 @@ vi.mock('isomorphic-ws', () => ({
 vi.mock('@/services/environment', () => ({
   getAPIBaseUrl: () => 'http://localhost/api',
   isTauriAppPlatform: () => false,
+  isWebAppPlatform: () => false,
 }));
 
 vi.mock('@/utils/supabase', () => ({

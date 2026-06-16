@@ -179,9 +179,9 @@ export class TxtToEpubConverter {
       });
     }
 
-    const blob = await this.createEpub(chapters, metadata);
+    const data = await this.createEpub(chapters, metadata);
     return {
-      file: new File([blob], fileName),
+      file: new File([data], fileName, { type: 'application/epub+zip' }),
       bookTitle,
       chapterCount: chapters.length,
       language,
@@ -244,9 +244,9 @@ export class TxtToEpubConverter {
       });
     }
 
-    const blob = await this.createEpub(chapters, metadata);
+    const data = await this.createEpub(chapters, metadata);
     return {
-      file: new File([blob], fileName),
+      file: new File([data], fileName, { type: 'application/epub+zip' }),
       bookTitle,
       chapterCount: chapters.length,
       language,
@@ -804,12 +804,17 @@ export class TxtToEpubConverter {
     return chapterRegexps;
   }
 
-  private async createEpub(chapters: Chapter[], metadata: Metadata): Promise<Blob> {
+  private async createEpub(chapters: Chapter[], metadata: Metadata): Promise<Uint8Array> {
     await configureZip();
-    const { BlobWriter, TextReader, ZipWriter } = await import('@zip.js/zip.js');
+    const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('@zip.js/zip.js');
     const { bookTitle, author, language, identifier } = metadata;
 
-    const zipWriter = new ZipWriter(new BlobWriter('application/epub+zip'), {
+    // Use Uint8ArrayWriter instead of BlobWriter so that the resulting
+    // Uint8Array can be passed to `new File([data])` without jsdom's
+    // broken `new File([blob])` stringification bug (jsdom calls
+    // Blob.toString() inside the File constructor, turning the binary
+    // payload into "[object Blob]").
+    const zipWriter = new ZipWriter(new Uint8ArrayWriter(), {
       extendedTimestamp: false,
     });
     await zipWriter.add('mimetype', new TextReader('application/epub+zip'), zipWriteOptions);

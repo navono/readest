@@ -18,7 +18,7 @@ type TestMetadata = {
 
 type TxtConverterPrivateAPI = {
   detectEncoding(buffer: ArrayBuffer): string | undefined;
-  createEpub(chapters: TestChapter[], metadata: TestMetadata): Promise<Blob>;
+  createEpub(chapters: TestChapter[], metadata: TestMetadata): Promise<Uint8Array>;
 };
 
 type TxtConverterFlowPrivateAPI = TxtConverterPrivateAPI & {
@@ -65,7 +65,7 @@ describe('TxtToEpubConverter', () => {
     const calls: number[] = [];
 
     converter.detectEncoding = () => 'utf-8';
-    converter.createEpub = async () => new Blob();
+    converter.createEpub = async () => new Uint8Array();
     converter.extractChapters = (_, __, option) => {
       calls.push(option.linesBetweenSegments);
       if (option.linesBetweenSegments === 8) {
@@ -96,7 +96,7 @@ describe('TxtToEpubConverter', () => {
     const calls: number[] = [];
 
     converter.detectEncoding = () => 'utf-8';
-    converter.createEpub = async () => new Blob();
+    converter.createEpub = async () => new Uint8Array();
     converter.extractChapters = (_, __, option) => {
       calls.push(option.linesBetweenSegments);
       if (option.linesBetweenSegments === 8) {
@@ -166,7 +166,8 @@ describe('TxtToEpubConverter', () => {
       identifier: 'sample-id',
     };
 
-    const blob = await converter.createEpub(chapters, metadata);
+    const data = await converter.createEpub(chapters, metadata);
+    const blob = new Blob([data], { type: 'application/epub+zip' });
     const { ZipReader, BlobReader, TextWriter } = await import('@zip.js/zip.js');
     const reader = new ZipReader(new BlobReader(blob));
     try {
@@ -210,7 +211,7 @@ describe('TxtToEpubConverter', () => {
     } as unknown as File;
 
     converter.detectEncodingFromFile = async () => 'utf-8';
-    converter.createEpub = async () => new Blob();
+    converter.createEpub = async () => new Uint8Array();
     converter.extractChaptersFromFileBySegments = async (_, __, ___, option) => {
       calls.push(option.linesBetweenSegments);
       if (option.linesBetweenSegments === 8) {
@@ -252,7 +253,7 @@ describe('TxtToEpubConverter', () => {
       },
     } as unknown as File;
 
-    converter.createEpub = async () => new Blob();
+    converter.createEpub = async () => new Uint8Array();
 
     const result = await converter.convert({ file: largeFile });
 
@@ -291,7 +292,7 @@ describe('TxtToEpubConverter', () => {
       },
     });
 
-    converter.createEpub = async () => new Blob();
+    converter.createEpub = async () => new Uint8Array();
 
     const result = await converter.convert({ file: fixedFile });
     expect(result.chapterCount).toBeGreaterThanOrEqual(1);
@@ -309,7 +310,7 @@ describe('TxtToEpubConverter', () => {
     });
     // stream() is NOT overridden — inherits base File's empty stream
 
-    converter.createEpub = async () => new Blob();
+    converter.createEpub = async () => new Uint8Array();
 
     await expect(converter.convert({ file: brokenFile })).rejects.toThrow('No chapters detected');
   });

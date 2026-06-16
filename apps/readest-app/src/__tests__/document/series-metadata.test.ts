@@ -37,16 +37,16 @@ const makeCbzFixture = async ({
   comicInfoPath?: string;
   imageCount: number;
 }): Promise<File> => {
-  const { BlobWriter, TextReader, ZipWriter } = await import('@zip.js/zip.js');
-  const writer = new ZipWriter(new BlobWriter('application/vnd.comicbook+zip'));
+  const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('@zip.js/zip.js');
+  const writer = new ZipWriter(new Uint8ArrayWriter());
   for (let i = 0; i < imageCount; i++) {
     await writer.add(`${i}.png`, new TextReader(`image-${i}`));
   }
   if (comicInfo) {
     await writer.add(comicInfoPath, new TextReader(comicInfo));
   }
-  const blob = await writer.close();
-  return new File([blob], 'page-count.cbz', { type: 'application/vnd.comicbook+zip' });
+  const data = await writer.close();
+  return new File([data], 'page-count.cbz', { type: 'application/vnd.comicbook+zip' });
 };
 
 describe('Calibre series metadata', () => {
